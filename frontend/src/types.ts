@@ -129,3 +129,14 @@ export interface ImportSummary {
   posters_restored: number;
   warnings: string[];
 }
+
+export interface ExtensionServerStatus {
+  active: boolean;
+  address: string;
+  error?: string | null;
+}
+
+export interface ExtensionInfo {
+  token: string;
+  status: ExtensionServerStatus;
+}

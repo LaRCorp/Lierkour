@@ -95,6 +95,34 @@ export const FilmModal: React.FC<FilmModalProps> = ({
   });
 
   const [quotesText, setQuotesText] = useState('');
+  const [loadedPoster, setLoadedPoster] = useState<{ path: string; src: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const posterPath = isOpen ? formData.poster_path : null;
+    if (!posterPath) {
+      return () => {
+        active = false;
+      };
+    }
+
+    invoke<string>('resolve_poster_asset', { storedPath: posterPath })
+      .then((src) => {
+        if (active) setLoadedPoster({ path: posterPath, src });
+      })
+      .catch(() => {
+        if (active) setLoadedPoster(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isOpen, formData.poster_path]);
+
+  const posterPreviewSrc =
+    isOpen && formData.poster_path && loadedPoster?.path === formData.poster_path
+      ? loadedPoster.src
+      : null;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -865,7 +893,14 @@ export const FilmModal: React.FC<FilmModalProps> = ({
             </button>
 
             {formData.poster_path && (
-              <div className="flex items-center gap-2 ml-auto">
+              <div className="flex items-center gap-2.5 ml-auto">
+                {posterPreviewSrc && (
+                  <img
+                    src={posterPreviewSrc}
+                    alt="Обложка"
+                    className="w-10 h-14 rounded-lg object-cover border border-slate-300 dark:border-slate-700 shadow-sm"
+                  />
+                )}
                 <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium truncate max-w-[180px]">
                   ✓ {formData.poster_path}
                 </span>

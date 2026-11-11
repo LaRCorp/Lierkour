@@ -1,6 +1,6 @@
 [package]
 name = "lierkour-app"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 authors = ["LaRevole"]
 license = "GPL-3.0-only"
@@ -23,7 +23,9 @@ tauri-plugin-dialog = "2.0"
 tauri-plugin-fs = "2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "net"] }
+axum = "0.8"
+uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 lierkour-core = { path = "../crates/core" }

@@ -465,9 +465,7 @@ export const FilmDetailView: React.FC<FilmDetailViewProps> = ({
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              if (window.confirm(isGame ? t('game.delete_confirm') : t('film.delete_confirm'))) {
-                onDelete(film.id);
-              }
+              onDelete(film.id);
             }}
             className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-colors shadow-sm cursor-pointer"
           >

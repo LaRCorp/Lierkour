@@ -156,7 +156,16 @@
     "omdb_desc": "Позволяет автоматически подтягивать постеры, описание, режиссёра и жанры фильмов по названию.",
     "omdb_key_label": "API-ключ OMDb (бесплатный)",
     "omdb_key_placeholder": "Введите ваш OMDb API ключ",
-    "save": "Сохранить настройки"
+    "save": "Сохранить настройки",
+    "lierex_title": "Связь с браузерным расширением LierEX",
+    "lierex_desc": "Локальный HTTP-сервер принимает фильмы и игры с Кинопоиска, IMDb, TMDb, Letterboxd, Steam, Epic Games, GOG и Itch.io в один клик.",
+    "lierex_active": "Связь с LierEX активна",
+    "lierex_inactive": "Сервер LierEX недоступен",
+    "lierex_token_label": "Защитный токен (X-LierEX-Token)",
+    "lierex_copy": "Копировать",
+    "lierex_copied": "Скопировано!",
+    "lierex_regenerate": "Обновить токен",
+    "lierex_hint": "Вставьте этот токен в настройки расширения LierEX в браузере."
   },
   "modal": {
     "media_type_label": "Тип контента",

@@ -1,16 +1,26 @@
+use crate::extension_api::{EXTENSION_TOKEN_SETTING, ExtensionServerStatus, generate_token};
 use lierkour_core::metadata::MovieMetadata;
 use lierkour_core::transfer::{ExportSummary, ImportSummary};
 use lierkour_core::{
     AppPaths, AppTheme, DashboardStats, Database, Film, FilmFilter, FilmScreenshot, NewFilm,
     RelatedFilm, RelationKind,
 };
+use serde::Serialize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::State;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtensionInfo {
+    pub token: String,
+    pub status: ExtensionServerStatus,
+}
 
 pub struct AppState {
     pub db: Arc<Mutex<Database>>,
     pub paths: AppPaths,
+    pub extension_token: Arc<RwLock<String>>,
+    pub extension_status: Arc<Mutex<ExtensionServerStatus>>,
 }
 
 // --------------------------- FILMS & CRUD ---------------------------
@@ -192,6 +202,46 @@ pub async fn set_setting(
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?
+}
+
+// --------------------------- LierEX EXTENSION ---------------------------
+
+#[tauri::command]
+pub async fn get_extension_info(state: State<'_, AppState>) -> Result<ExtensionInfo, String> {
+    let token = state
+        .extension_token
+        .read()
+        .map_err(|e| e.to_string())?
+        .clone();
+    let status = state
+        .extension_status
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+
+    Ok(ExtensionInfo { token, status })
+}
+
+#[tauri::command]
+pub async fn regenerate_extension_token(state: State<'_, AppState>) -> Result<String, String> {
+    let db = Arc::clone(&state.db);
+    let token_lock = Arc::clone(&state.extension_token);
+    let new_token = generate_token();
+    let token_for_db = new_token.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        db_lock
+            .set_setting(EXTENSION_TOKEN_SETTING, &token_for_db)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Execution error: {e}"))??;
+
+    let mut guard = token_lock.write().map_err(|e| e.to_string())?;
+    *guard = new_token.clone();
+
+    Ok(new_token)
 }
 
 // --------------------------- IMAGES & POSTERS ---------------------------

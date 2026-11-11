@@ -197,6 +197,19 @@ fn search_first_id(
     }
 }
 
+/// Скачивает байты обложки по HTTP/HTTPS URL (с ограничением размера и таймаутом).
+pub fn download_poster_url(url: &str) -> Result<Vec<u8>, MetadataError> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err(MetadataError::Parse(
+            "поддерживаются только HTTP/HTTPS URL обложек".to_owned(),
+        ));
+    }
+
+    let agent = build_agent();
+    download_poster(&agent, trimmed)
+}
+
 fn download_poster(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, MetadataError> {
     let mut response = agent.get(url).call().map_err(map_ureq_error)?;
     let bytes = response
@@ -386,15 +399,35 @@ fn translate_genre(genre: &str) -> String {
         "musical" => "Мюзикл",
         "mystery" => "Детектив",
         "news" => "Новости",
-        "reality-tv" => "Реалити-шоу",
+        "reality-tv" | "reality" => "Реалити-шоу",
         "romance" => "Романтика",
-        "sci-fi" => "Фантастика",
+        "sci-fi" | "science fiction" => "Фантастика",
+        "sci-fi & fantasy" => "Фантастика, Фэнтези",
+        "action & adventure" => "Боевик, Приключения",
+        "war & politics" => "Военный, Политика",
         "short" => "Короткометражка",
-        "sport" => "Спорт",
-        "talk-show" => "Ток-шоу",
+        "sport" | "sports" => "Спорт",
+        "talk-show" | "talk" => "Ток-шоу",
         "thriller" => "Триллер",
         "war" => "Военный",
         "western" => "Вестерн",
+        "tv movie" => "Телефильм",
+        // Игровые жанры (Steam / Epic Games / GOG / Itch.io)
+        "indie" => "Инди",
+        "role-playing" | "role playing" | "rpgs" => "RPG",
+        "strategy" => "Стратегия",
+        "simulation" | "simulator" => "Симулятор",
+        "platformer" => "Платформер",
+        "shooter" => "Шутер",
+        "puzzle" => "Головоломка",
+        "racing" => "Гонки",
+        "casual" => "Казуальная",
+        "survival" => "Выживание",
+        "stealth" => "Стелс",
+        "fighting" => "Файтинг",
+        "visual novel" => "Визуальная новелла",
+        "roguelike" | "roguelite" => "Рогалик",
+        "metroidvania" => "Метроидвания",
         _ => return genre.to_owned(),
     };
     translated.to_owned()
@@ -465,6 +498,18 @@ mod tests {
         assert!(matches!(
             error_from_omdb(Some("Invalid API key!")),
             MetadataError::Api(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_non_http_poster_urls() {
+        assert!(matches!(
+            download_poster_url("file:///etc/passwd"),
+            Err(MetadataError::Parse(_))
+        ));
+        assert!(matches!(
+            download_poster_url("  "),
+            Err(MetadataError::Parse(_))
         ));
     }
 }

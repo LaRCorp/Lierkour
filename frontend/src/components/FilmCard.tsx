@@ -169,9 +169,7 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  if (window.confirm(isGame ? t('game.delete_confirm') : t('film.delete_confirm'))) {
-                    onDelete(film.id);
-                  }
+                  onDelete(film.id);
                 }}
                 title={isGame ? t('game.delete') : t('film.delete')}
                 className="p-1.5 rounded-lg bg-white/90 dark:bg-slate-900/80 backdrop-blur-md border border-slate-300 dark:border-slate-700 text-rose-600 dark:text-rose-300 hover:text-white hover:bg-rose-600 transition-colors shadow-sm cursor-pointer"

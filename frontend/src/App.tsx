@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import type { Film, FilmFilter, DashboardStats, NewFilm } from './types';
+import type { Film, FilmFilter, DashboardStats, NewFilm, ExtensionInfo } from './types';
 import { FilmCard } from './components/FilmCard';
 import { FilmModal } from './components/FilmModal';
 import { FilmDetailView } from './components/FilmDetailView';
@@ -23,6 +24,7 @@ import {
   ChevronRight,
   Gamepad2,
   Layers,
+  Trash2,
 } from 'lucide-react';
 
 type ActiveTab = 'library' | 'analytics' | 'backup' | 'settings';
@@ -54,6 +56,8 @@ export const App: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingFilm, setEditingFilm] = useState<Film | null>(null);
   const [parentForSeason, setParentForSeason] = useState<{ parent: Film; seasonNumber: number } | null>(null);
+  const [filmToDelete, setFilmToDelete] = useState<Film | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Detailed View State & Navigation History
   const [selectedFilm, setSelectedFilm] = useState<Film | null>(null);
@@ -128,8 +132,9 @@ export const App: React.FC = () => {
     ];
   }, [selectedMediaType, t]);
 
-  // Settings
+  // Settings & LierEX Extension
   const [omdbApiKey, setOmdbApiKey] = useState('');
+  const [extensionInfo, setExtensionInfo] = useState<ExtensionInfo | null>(null);
 
   // Load initial theme and settings from DB
   useEffect(() => {
@@ -151,7 +156,24 @@ export const App: React.FC = () => {
         if (val) setOmdbApiKey(val);
       })
       .catch((err) => console.error(err));
+
+    invoke<ExtensionInfo>('get_extension_info')
+      .then((info) => setExtensionInfo(info))
+      .catch((err) => console.error(err));
   }, []);
+
+  const handleRegenerateExtensionToken = async () => {
+    try {
+      const newToken = await invoke<string>('regenerate_extension_token');
+      setExtensionInfo((prev) =>
+        prev
+          ? { ...prev, token: newToken }
+          : { token: newToken, status: { active: false, address: '127.0.0.1:8765' } }
+      );
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const handleThemeChange = async (newTheme: string) => {
     const val = newTheme === 'light' ? 'light' : 'dark';
@@ -214,6 +236,30 @@ export const App: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, [search, selectedCategory, selectedStatus, selectedMediaType]);
+
+  const fetchDataRef = useRef(fetchData);
+  useEffect(() => {
+    fetchDataRef.current = fetchData;
+  });
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<Film>('extension-import-draft', (event) => {
+      const imported = event.payload;
+      fetchDataRef.current();
+      setParentForSeason(null);
+      setEditingFilm(imported);
+      setIsModalOpen(true);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => console.error('Failed to listen for extension imports:', err));
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const toggleLanguage = () => {
     const nextLang = i18n.language.startsWith('ru') ? 'en' : 'ru';
@@ -444,9 +490,24 @@ export const App: React.FC = () => {
     };
   }, [historyStack, forwardStack, selectedFilm, activeTab, isModalOpen]);
 
-  const handleDeleteFilm = async (id: number) => {
+  const handleRequestDeleteFilm = (id: number) => {
+    const target =
+      (selectedFilm && selectedFilm.id === id ? selectedFilm : null) ||
+      films.find((f) => f.id === id) ||
+      allFilmsRaw.find((f) => f.id === id) ||
+      null;
+    if (target) {
+      setFilmToDelete(target);
+    }
+  };
+
+  const handleConfirmDeleteFilm = async () => {
+    if (!filmToDelete || isDeleting) return;
+    const id = filmToDelete.id;
+    setIsDeleting(true);
     try {
       await invoke('delete_film', { id });
+      setFilmToDelete(null);
       setHistoryStack((h) => h.filter((entry) => entry.film?.id !== id));
       setForwardStack((f) => f.filter((entry) => entry.film?.id !== id));
       if (selectedFilm && selectedFilm.id === id) {
@@ -455,6 +516,8 @@ export const App: React.FC = () => {
       fetchData();
     } catch (err) {
       console.error(err);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -481,16 +544,18 @@ export const App: React.FC = () => {
               onClick={() => handleTabChange('library')}
               className="flex items-center gap-2 sm:gap-2.5 select-none cursor-pointer shrink-0"
             >
-              <div className="h-9 w-9 sm:h-10 sm:w-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-violet-500 flex items-center justify-center font-black text-white shadow-lg shadow-indigo-600/30 shrink-0">
-                <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
-              </div>
+              <img
+                src="/logo.png"
+                alt={t('app.title')}
+                className="h-9 w-9 sm:h-10 sm:w-10 object-contain drop-shadow-sm shrink-0"
+              />
               <div className="flex flex-col">
                 <div className="flex items-center gap-1.5">
                   <h1 className="text-sm sm:text-base font-extrabold tracking-tight bg-gradient-to-r from-indigo-500 to-violet-500 bg-clip-text text-transparent">
                     {t('app.title')}
                   </h1>
                   <span className="text-[9px] sm:text-[10px] bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.2 rounded border border-indigo-500/20">
-                    v2.0
+                    v2.1
                   </span>
                 </div>
                 <span className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 font-medium tracking-tight hidden md:block">
@@ -663,7 +728,7 @@ export const App: React.FC = () => {
             allFilms={allFilmsRaw}
             onBack={handleBack}
             onEdit={handleOpenEditModal}
-            onDelete={handleDeleteFilm}
+            onDelete={handleRequestDeleteFilm}
             onAddSeason={handleOpenAddSeasonModal}
             onOpenFilm={handleOpenFilm}
             onRefresh={fetchData}
@@ -809,7 +874,7 @@ export const App: React.FC = () => {
                           film={film}
                           onOpen={handleOpenFilm}
                           onEdit={handleOpenEditModal}
-                          onDelete={handleDeleteFilm}
+                          onDelete={handleRequestDeleteFilm}
                         />
                       ))}
                     </div>
@@ -831,6 +896,8 @@ export const App: React.FC = () => {
                 onThemeChange={handleThemeChange}
                 apiKey={omdbApiKey}
                 onSaveApiKey={handleSaveApiKey}
+                extensionInfo={extensionInfo}
+                onRegenerateExtensionToken={handleRegenerateExtensionToken}
               />
             )}
           </>
@@ -850,6 +917,61 @@ export const App: React.FC = () => {
         onSave={handleSaveFilm}
         categories={categories}
       />
+
+      {/* Delete Confirmation Modal */}
+      {filmToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
+          onClick={() => {
+            if (!isDeleting) setFilmToDelete(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-rose-500 border border-rose-500/20">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1">
+                <h3 className="text-base font-semibold text-slate-900 dark:text-white truncate">
+                  {filmToDelete.title}
+                </h3>
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  {filmToDelete.media_type === 'game'
+                    ? t('game.delete_confirm')
+                    : t('film.delete_confirm')}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setFilmToDelete(null)}
+                className="rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {t('modal.cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDeleteFilm}
+                className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-500 shadow-lg shadow-rose-600/20 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>
+                  {filmToDelete.media_type === 'game' ? t('game.delete') : t('film.delete')}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

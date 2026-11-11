@@ -156,7 +156,16 @@
     "omdb_desc": "Allows automatically fetching posters, descriptions, directors, and genres by title.",
     "omdb_key_label": "OMDb API Key (Free)",
     "omdb_key_placeholder": "Enter your OMDb API key",
-    "save": "Save Settings"
+    "save": "Save Settings",
+    "lierex_title": "LierEX Browser Extension",
+    "lierex_desc": "Local HTTP server receives movies and games from Kinopoisk, IMDb, TMDb, Letterboxd, Steam, Epic Games, GOG, and Itch.io in one click.",
+    "lierex_active": "LierEX connection is active",
+    "lierex_inactive": "LierEX server unavailable",
+    "lierex_token_label": "Security Token (X-LierEX-Token)",
+    "lierex_copy": "Copy",
+    "lierex_copied": "Copied!",
+    "lierex_regenerate": "Regenerate",
+    "lierex_hint": "Paste this token into the LierEX browser extension settings."
   },
   "modal": {
     "media_type_label": "Content Type",

@@ -1,10 +1,15 @@
 mod commands;
+mod extension_api;
 
 use commands::*;
+use extension_api::{
+    ExtensionServerStatus, create_tauri_import_callback, load_or_create_token,
+    start_extension_server,
+};
 use lierkour_core::{AppPaths, Database};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::Manager;
 
 pub fn run() {
@@ -57,11 +62,30 @@ pub fn run() {
                 }
             }
 
-            let db = Database::open(&paths.db_path).expect("Failed to open SQLite database");
+            let mut db = Database::open(&paths.db_path).expect("Failed to open SQLite database");
+            let token_str =
+                load_or_create_token(&mut db).unwrap_or_else(|_| extension_api::generate_token());
+
+            let db_arc = Arc::new(Mutex::new(db));
+            let extension_token = Arc::new(RwLock::new(token_str));
+            let extension_status = Arc::new(Mutex::new(ExtensionServerStatus::default()));
+
+            let on_import = create_tauri_import_callback(
+                Arc::clone(&db_arc),
+                paths.clone(),
+                app.handle().clone(),
+            );
+            start_extension_server(
+                Arc::clone(&extension_token),
+                Arc::clone(&extension_status),
+                on_import,
+            );
 
             app.manage(AppState {
-                db: Arc::new(Mutex::new(db)),
+                db: db_arc,
                 paths,
+                extension_token,
+                extension_status,
             });
 
             Ok(())
@@ -81,6 +105,8 @@ pub fn run() {
             set_theme,
             get_setting,
             set_setting,
+            get_extension_info,
+            regenerate_extension_token,
             import_poster_file,
             import_poster_from_base64,
             resolve_poster_asset,
