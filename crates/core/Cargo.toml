@@ -3,7 +3,7 @@ name = "lierkour-core"
 version = "2.0.0"
 edition = "2024"
 authors = ["LaRevole"]
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Core business logic, models, and database layer for Lierkour - Keeper of Completed Media"
 
 [dependencies]
