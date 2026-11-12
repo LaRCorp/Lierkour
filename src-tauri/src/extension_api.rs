@@ -13,16 +13,25 @@ use lierkour_core::{AppPaths, Database, metadata, storage};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+pub const EXTENSION_API_PORT: u16 = 8765;
 pub const EXTENSION_API_ADDR: &str = "127.0.0.1:8765";
 pub const EXTENSION_TOKEN_SETTING: &str = "lierex_token";
 pub const EXTENSION_TOKEN_HEADER: &str = "x-lierex-token";
 pub const EXTENSION_IMPORT_EVENT: &str = "extension-import-draft";
+pub const EXTENSION_SERVER_ENABLED_SETTING: &str = "extension_server_enabled";
+pub const EXTENSION_SERVER_PORT_SETTING: &str = "extension_server_port";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionServerStatus {
     pub active: bool,
     pub address: String,
+    #[serde(default = "default_ext_port")]
+    pub port: u16,
     pub error: Option<String>,
+}
+
+fn default_ext_port() -> u16 {
+    EXTENSION_API_PORT
 }
 
 impl Default for ExtensionServerStatus {
@@ -30,7 +39,22 @@ impl Default for ExtensionServerStatus {
         Self {
             active: false,
             address: EXTENSION_API_ADDR.to_owned(),
+            port: EXTENSION_API_PORT,
             error: None,
+        }
+    }
+}
+
+pub struct ExtensionServerHandle {
+    pub shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub status: ExtensionServerStatus,
+}
+
+impl Default for ExtensionServerHandle {
+    fn default() -> Self {
+        Self {
+            shutdown_tx: None,
+            status: ExtensionServerStatus::default(),
         }
     }
 }
@@ -566,62 +590,115 @@ pub fn build_router(state: ExtensionApiState) -> Router {
         .layer(middleware::from_fn(cors_middleware))
 }
 
-/// Запускает локальный HTTP-сервер (`127.0.0.1:8765`) на базе `axum` для приёма
+pub fn stop_extension_server(handle_arc: &Arc<Mutex<ExtensionServerHandle>>) -> ExtensionServerStatus {
+    let mut handle = match handle_arc.lock() {
+        Ok(h) => h,
+        Err(e) => e.into_inner(),
+    };
+
+    if let Some(tx) = handle.shutdown_tx.take() {
+        let _ = tx.send(());
+    }
+
+    handle.status.active = false;
+    handle.status.error = None;
+    handle.status.clone()
+}
+
+/// Запускает локальный HTTP-сервер (`127.0.0.1:{port}`) на базе `axum` для приёма
 /// импортированных данных от браузерного расширения LierEX через callback.
 pub fn start_extension_server(
+    handle_arc: &Arc<Mutex<ExtensionServerHandle>>,
+    port: u16,
     token: Arc<RwLock<String>>,
-    status: Arc<Mutex<ExtensionServerStatus>>,
     on_import: ImportCallback,
-) {
-    let std_listener = match std::net::TcpListener::bind(EXTENSION_API_ADDR) {
+) -> ExtensionServerStatus {
+    stop_extension_server(handle_arc);
+
+    let address = format!("127.0.0.1:{port}");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+    let std_listener = match std::net::TcpListener::bind(&address) {
         Ok(listener) => listener,
         Err(err) => {
-            if let Ok(mut st) = status.lock() {
-                st.active = false;
-                st.error = Some(err.to_string());
-            }
-            eprintln!("[LierEX] Failed to bind {EXTENSION_API_ADDR}: {err}");
-            return;
+            let mut handle = match handle_arc.lock() {
+                Ok(h) => h,
+                Err(e) => e.into_inner(),
+            };
+            handle.status.active = false;
+            handle.status.port = port;
+            handle.status.address = address;
+            handle.status.error = Some(err.to_string());
+            eprintln!("[LierEX] Failed to bind {}: {err}", handle.status.address);
+            return handle.status.clone();
         }
     };
 
     if let Err(err) = std_listener.set_nonblocking(true) {
-        if let Ok(mut st) = status.lock() {
-            st.active = false;
-            st.error = Some(err.to_string());
-        }
+        let mut handle = match handle_arc.lock() {
+            Ok(h) => h,
+            Err(e) => e.into_inner(),
+        };
+        handle.status.active = false;
+        handle.status.port = port;
+        handle.status.address = address;
+        handle.status.error = Some(err.to_string());
         eprintln!("[LierEX] Failed to configure listener: {err}");
-        return;
+        return handle.status.clone();
     }
 
-    if let Ok(mut st) = status.lock() {
-        st.active = true;
-        st.error = None;
+    {
+        let mut handle = match handle_arc.lock() {
+            Ok(h) => h,
+            Err(e) => e.into_inner(),
+        };
+        handle.shutdown_tx = Some(shutdown_tx);
+        handle.status.active = true;
+        handle.status.port = port;
+        handle.status.address = address;
+        handle.status.error = None;
     }
+
+    let status_to_return = {
+        let handle = match handle_arc.lock() {
+            Ok(h) => h,
+            Err(e) => e.into_inner(),
+        };
+        handle.status.clone()
+    };
 
     let router = build_router(ExtensionApiState { token, on_import });
+    let handle_for_task = Arc::clone(handle_arc);
 
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::from_std(std_listener) {
             Ok(listener) => listener,
             Err(err) => {
-                if let Ok(mut st) = status.lock() {
-                    st.active = false;
-                    st.error = Some(err.to_string());
+                if let Ok(mut h) = handle_for_task.lock() {
+                    h.status.active = false;
+                    h.status.error = Some(err.to_string());
                 }
                 eprintln!("[LierEX] Failed to adopt Tokio listener: {err}");
                 return;
             }
         };
 
-        if let Err(err) = axum::serve(listener, router).await {
-            if let Ok(mut st) = status.lock() {
-                st.active = false;
-                st.error = Some(err.to_string());
+        let server = axum::serve(listener, router).with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        });
+
+        if let Err(err) = server.await {
+            if let Ok(mut h) = handle_for_task.lock() {
+                h.status.active = false;
+                h.status.error = Some(err.to_string());
             }
             eprintln!("[LierEX] Extension API server stopped: {err}");
+        } else if let Ok(mut h) = handle_for_task.lock() {
+            h.status.active = false;
         }
     });
+
+    status_to_return
 }
 
 #[cfg(test)]

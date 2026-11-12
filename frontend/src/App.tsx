@@ -2,13 +2,14 @@ import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
-import type { Film, FilmFilter, DashboardStats, NewFilm, ExtensionInfo } from './types';
+import type { Film, FilmFilter, DashboardStats, NewFilm, ExtensionInfo, SyncServerStatus } from './types';
 import { FilmCard } from './components/FilmCard';
 import { FilmModal } from './components/FilmModal';
 import { FilmDetailView } from './components/FilmDetailView';
 import { AnalyticsView } from './components/AnalyticsView';
 import { BackupView } from './components/BackupView';
 import { SettingsView } from './components/SettingsView';
+import { SyncView } from './components/SyncView';
 import {
   Search,
   Film as FilmIcon,
@@ -25,9 +26,10 @@ import {
   Gamepad2,
   Layers,
   Trash2,
+  Smartphone,
 } from 'lucide-react';
 
-type ActiveTab = 'library' | 'analytics' | 'backup' | 'settings';
+type ActiveTab = 'library' | 'analytics' | 'backup' | 'sync' | 'settings';
 
 interface NavigationEntry {
   tab: ActiveTab;
@@ -132,9 +134,52 @@ export const App: React.FC = () => {
     ];
   }, [selectedMediaType, t]);
 
-  // Settings & LierEX Extension
+  // Settings, Sync & LierEX Extension
   const [omdbApiKey, setOmdbApiKey] = useState('');
   const [extensionInfo, setExtensionInfo] = useState<ExtensionInfo | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncServerStatus | null>(null);
+
+  const fetchSyncStatus = async () => {
+    try {
+      const status = await invoke<SyncServerStatus>('get_sync_server_status');
+      setSyncStatus(status);
+    } catch (err) {
+      console.error('Failed to get sync server status:', err);
+    }
+  };
+
+  const fetchExtensionInfo = async () => {
+    try {
+      const info = await invoke<ExtensionInfo>('get_extension_info');
+      setExtensionInfo(info);
+    } catch (err) {
+      console.error('Failed to get extension info:', err);
+    }
+  };
+
+  const handleToggleSyncServer = async (enabled: boolean, port?: number) => {
+    try {
+      const status = await invoke<SyncServerStatus>('toggle_sync_server', {
+        enabled,
+        port: port ?? null,
+      });
+      setSyncStatus(status);
+    } catch (err) {
+      console.error('Failed to toggle sync server:', err);
+    }
+  };
+
+  const handleToggleExtensionServer = async (enabled: boolean, port?: number) => {
+    try {
+      const info = await invoke<ExtensionInfo>('toggle_extension_server', {
+        enabled,
+        port: port ?? null,
+      });
+      setExtensionInfo(info);
+    } catch (err) {
+      console.error('Failed to toggle extension server:', err);
+    }
+  };
 
   // Load initial theme and settings from DB
   useEffect(() => {
@@ -157,9 +202,8 @@ export const App: React.FC = () => {
       })
       .catch((err) => console.error(err));
 
-    invoke<ExtensionInfo>('get_extension_info')
-      .then((info) => setExtensionInfo(info))
-      .catch((err) => console.error(err));
+    fetchExtensionInfo();
+    fetchSyncStatus();
   }, []);
 
   const handleRegenerateExtensionToken = async () => {
@@ -632,6 +676,21 @@ export const App: React.FC = () => {
               </button>
 
               <button
+                onClick={() => handleTabChange('sync')}
+                title={t('app.nav_sync')}
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === 'sync'
+                    ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/25'
+                    : isLight
+                    ? 'text-slate-600 hover:bg-slate-200/60'
+                    : 'text-slate-400 hover:bg-slate-900'
+                }`}
+              >
+                <Smartphone className="w-4 h-4 shrink-0" />
+                <span className="hidden lg:inline">{t('app.nav_sync')}</span>
+              </button>
+
+              <button
                 onClick={() => handleTabChange('settings')}
                 title={t('app.nav_settings')}
                 className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
@@ -889,7 +948,16 @@ export const App: React.FC = () => {
             {/* VIEW 4: BACKUP & EXPORT */}
             {activeTab === 'backup' && <BackupView onRefresh={fetchData} />}
 
-            {/* VIEW 5: SETTINGS */}
+            {/* VIEW 5: SYNC */}
+            {activeTab === 'sync' && (
+              <SyncView
+                syncStatus={syncStatus}
+                onToggleSyncServer={handleToggleSyncServer}
+                onRefreshSyncStatus={fetchSyncStatus}
+              />
+            )}
+
+            {/* VIEW 6: SETTINGS */}
             {activeTab === 'settings' && (
               <SettingsView
                 currentTheme={theme}
@@ -898,6 +966,9 @@ export const App: React.FC = () => {
                 onSaveApiKey={handleSaveApiKey}
                 extensionInfo={extensionInfo}
                 onRegenerateExtensionToken={handleRegenerateExtensionToken}
+                onToggleExtensionServer={handleToggleExtensionServer}
+                syncStatus={syncStatus}
+                onToggleSyncServer={handleToggleSyncServer}
               />
             )}
           </>

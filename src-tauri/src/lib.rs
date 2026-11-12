@@ -3,10 +3,7 @@ mod extension_api;
 mod sync_api;
 
 use commands::*;
-use extension_api::{
-    ExtensionServerStatus, create_tauri_import_callback, load_or_create_token,
-    start_extension_server,
-};
+use extension_api::{create_tauri_import_callback, load_or_create_token};
 use lierkour_core::{AppPaths, Database};
 use std::fs;
 use std::path::PathBuf;
@@ -67,27 +64,63 @@ pub fn run() {
             let token_str =
                 load_or_create_token(&mut db).unwrap_or_else(|_| extension_api::generate_token());
 
+            let ext_enabled = db
+                .get_setting(extension_api::EXTENSION_SERVER_ENABLED_SETTING)
+                .unwrap_or(None)
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            let ext_port = db
+                .get_setting(extension_api::EXTENSION_SERVER_PORT_SETTING)
+                .unwrap_or(None)
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(extension_api::EXTENSION_API_PORT);
+
+            let sync_enabled = db
+                .get_setting(sync_api::SYNC_SERVER_ENABLED_SETTING)
+                .unwrap_or(None)
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            let sync_port = db
+                .get_setting(sync_api::SYNC_SERVER_PORT_SETTING)
+                .unwrap_or(None)
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(sync_api::DEFAULT_SYNC_PORT);
+
             let db_arc = Arc::new(Mutex::new(db));
             let extension_token = Arc::new(RwLock::new(token_str));
-            let extension_status = Arc::new(Mutex::new(ExtensionServerStatus::default()));
+            let extension_handle = Arc::new(Mutex::new(extension_api::ExtensionServerHandle::default()));
+            let sync_handle = Arc::new(Mutex::new(sync_api::SyncServerHandle::default()));
 
             let on_import = create_tauri_import_callback(
                 Arc::clone(&db_arc),
                 paths.clone(),
                 app.handle().clone(),
             );
-            start_extension_server(
-                Arc::clone(&extension_token),
-                Arc::clone(&extension_status),
-                on_import,
-            );
-            sync_api::start_sync_server(Arc::clone(&db_arc), paths.clone());
+
+            if ext_enabled {
+                extension_api::start_extension_server(
+                    &extension_handle,
+                    ext_port,
+                    Arc::clone(&extension_token),
+                    Arc::clone(&on_import),
+                );
+            }
+            if sync_enabled {
+                sync_api::start_sync_server(
+                    &sync_handle,
+                    sync_port,
+                    Arc::clone(&db_arc),
+                    paths.clone(),
+                );
+            }
 
             app.manage(AppState {
                 db: db_arc,
                 paths,
                 extension_token,
-                extension_status,
+                extension_handle,
+                sync_handle,
+                on_import,
             });
 
             Ok(())
@@ -108,7 +141,11 @@ pub fn run() {
             get_setting,
             set_setting,
             get_extension_info,
+            toggle_extension_server,
             regenerate_extension_token,
+            get_sync_server_status,
+            toggle_sync_server,
+            get_network_ips,
             import_poster_file,
             import_poster_from_base64,
             resolve_poster_asset,

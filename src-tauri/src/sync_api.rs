@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path as AxumPath, State};
@@ -9,6 +9,99 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use lierkour_core::sync::{SyncPayload, create_thumbnail};
 use lierkour_core::{AppPaths, Database};
+use serde::{Deserialize, Serialize};
+
+pub const DEFAULT_SYNC_PORT: u16 = 8766;
+pub const SYNC_SERVER_ENABLED_SETTING: &str = "sync_server_enabled";
+pub const SYNC_SERVER_PORT_SETTING: &str = "sync_server_port";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncServerStatus {
+    pub active: bool,
+    pub port: u16,
+    pub local_ips: Vec<String>,
+    pub recommended_url: String,
+    pub all_urls: Vec<String>,
+    pub error: Option<String>,
+}
+
+impl Default for SyncServerStatus {
+    fn default() -> Self {
+        let local_ips = get_local_ips();
+        let port = DEFAULT_SYNC_PORT;
+        let recommended_url = local_ips
+            .first()
+            .map(|ip| format!("http://{ip}:{port}"))
+            .unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
+        let all_urls = local_ips
+            .iter()
+            .map(|ip| format!("http://{ip}:{port}"))
+            .collect();
+
+        Self {
+            active: false,
+            port,
+            local_ips,
+            recommended_url,
+            all_urls,
+            error: None,
+        }
+    }
+}
+
+pub struct SyncServerHandle {
+    pub shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub status: SyncServerStatus,
+}
+
+impl Default for SyncServerHandle {
+    fn default() -> Self {
+        Self {
+            shutdown_tx: None,
+            status: SyncServerStatus::default(),
+        }
+    }
+}
+
+/// Определение локальных IPv4 адресов ПК для подключения мобильных устройств.
+pub fn get_local_ips() -> Vec<String> {
+    let mut ips = Vec::new();
+
+    // 1. Метод UDP-маршрутизации (быстро определяет первичный сетевой интерфейс с выходом в LAN)
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                let ip_str = addr.ip().to_string();
+                if !addr.ip().is_loopback() {
+                    ips.push(ip_str);
+                }
+            }
+        }
+    }
+
+    // 2. Разрешение локального имени хоста через системный DNS/NetBIOS
+    let hostname = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    if !hostname.is_empty() {
+        if let Ok(addrs) = format!("{hostname}:0").to_socket_addrs() {
+            for addr in addrs {
+                if let std::net::IpAddr::V4(ipv4) = addr.ip() {
+                    let s = ipv4.to_string();
+                    if !ipv4.is_loopback() && !ips.contains(&s) {
+                        ips.push(s);
+                    }
+                }
+            }
+        }
+    }
+
+    if ips.is_empty() {
+        ips.push("127.0.0.1".to_string());
+    }
+
+    ips
+}
 
 #[derive(Clone)]
 pub struct SyncServerState {
@@ -16,35 +109,136 @@ pub struct SyncServerState {
     pub paths: AppPaths,
 }
 
-pub fn start_sync_server(db: Arc<Mutex<Database>>, paths: AppPaths) {
+pub fn stop_sync_server(handle_arc: &Arc<Mutex<SyncServerHandle>>) -> SyncServerStatus {
+    let mut handle = match handle_arc.lock() {
+        Ok(h) => h,
+        Err(e) => e.into_inner(),
+    };
+
+    if let Some(tx) = handle.shutdown_tx.take() {
+        let _ = tx.send(());
+    }
+
+    handle.status.active = false;
+    handle.status.error = None;
+    handle.status.clone()
+}
+
+pub fn start_sync_server(
+    handle_arc: &Arc<Mutex<SyncServerHandle>>,
+    port: u16,
+    db: Arc<Mutex<Database>>,
+    paths: AppPaths,
+) -> SyncServerStatus {
+    // Останавливаем предыдущий сервер, если работал
+    stop_sync_server(handle_arc);
+
     let state = SyncServerState { db, paths };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to build Tokio runtime for Sync Server");
+    let local_ips = get_local_ips();
+    let recommended_url = local_ips
+        .first()
+        .map(|ip| format!("http://{ip}:{port}"))
+        .unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
+    let all_urls = local_ips
+        .iter()
+        .map(|ip| format!("http://{ip}:{port}"))
+        .collect();
 
-        rt.block_on(async move {
-            let app = Router::new()
-                .route("/api/v1/sync/exchange", post(exchange_handler))
-                .route("/api/v1/sync/media/{kind}/{file_name}", get(media_handler))
-                .route("/api/v1/sync/media/{kind}/{file_name}/thumb", get(thumbnail_handler))
-                .with_state(state)
-                .layer(middleware::from_fn(cors_middleware));
-
-            let addr: SocketAddr = "0.0.0.0:8766".parse().unwrap();
-            let listener = match tokio::net::TcpListener::bind(addr).await {
-                Ok(l) => l,
-                Err(err) => {
-                    eprintln!("[Lierkour Sync] Failed to bind 0.0.0.0:8766: {err}");
-                    return;
-                }
+    let std_listener = match std::net::TcpListener::bind(format!("0.0.0.0:{port}")) {
+        Ok(l) => l,
+        Err(err) => {
+            let mut handle = match handle_arc.lock() {
+                Ok(h) => h,
+                Err(e) => e.into_inner(),
             };
-            println!("[Lierkour Sync] Listening for mobile devices on http://0.0.0.0:8766");
-            let _ = axum::serve(listener, app).await;
+            handle.status.active = false;
+            handle.status.port = port;
+            handle.status.local_ips = local_ips;
+            handle.status.recommended_url = recommended_url;
+            handle.status.all_urls = all_urls;
+            handle.status.error = Some(err.to_string());
+            return handle.status.clone();
+        }
+    };
+
+    if let Err(err) = std_listener.set_nonblocking(true) {
+        let mut handle = match handle_arc.lock() {
+            Ok(h) => h,
+            Err(e) => e.into_inner(),
+        };
+        handle.status.active = false;
+        handle.status.port = port;
+        handle.status.local_ips = local_ips;
+        handle.status.recommended_url = recommended_url;
+        handle.status.all_urls = all_urls;
+        handle.status.error = Some(err.to_string());
+        return handle.status.clone();
+    }
+
+    {
+        let mut handle = match handle_arc.lock() {
+            Ok(h) => h,
+            Err(e) => e.into_inner(),
+        };
+        handle.shutdown_tx = Some(shutdown_tx);
+        handle.status.active = true;
+        handle.status.port = port;
+        handle.status.local_ips = local_ips;
+        handle.status.recommended_url = recommended_url;
+        handle.status.all_urls = all_urls;
+        handle.status.error = None;
+    }
+
+    let status_to_return = {
+        let handle = match handle_arc.lock() {
+            Ok(h) => h,
+            Err(e) => e.into_inner(),
+        };
+        handle.status.clone()
+    };
+
+    let handle_for_task = Arc::clone(handle_arc);
+
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(std_listener) {
+            Ok(l) => l,
+            Err(err) => {
+                if let Ok(mut h) = handle_for_task.lock() {
+                    h.status.active = false;
+                    h.status.error = Some(err.to_string());
+                }
+                eprintln!("[Lierkour Sync] Failed to adopt tokio listener: {err}");
+                return;
+            }
+        };
+
+        let app = Router::new()
+            .route("/api/v1/sync/exchange", post(exchange_handler))
+            .route("/api/v1/sync/media/{kind}/{file_name}", get(media_handler))
+            .route("/api/v1/sync/media/{kind}/{file_name}/thumb", get(thumbnail_handler))
+            .with_state(state)
+            .layer(middleware::from_fn(cors_middleware));
+
+        println!("[Lierkour Sync] Listening for mobile devices on http://0.0.0.0:{port}");
+
+        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
         });
+
+        if let Err(err) = server.await {
+            if let Ok(mut h) = handle_for_task.lock() {
+                h.status.active = false;
+                h.status.error = Some(err.to_string());
+            }
+            eprintln!("[Lierkour Sync] Sync server error: {err}");
+        } else if let Ok(mut h) = handle_for_task.lock() {
+            h.status.active = false;
+        }
     });
+
+    status_to_return
 }
 
 async fn cors_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
@@ -66,13 +260,11 @@ async fn exchange_handler(
 ) -> Result<Json<SyncPayload>, StatusCode> {
     let mut db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // 1. Применяем входящие изменения от клиента (мобильного приложения)
     let _summary = db.apply_sync_delta(&client_payload).map_err(|e| {
         eprintln!("[Lierkour Sync] Apply delta error: {e:?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // 2. Извлекаем изменения на ПК с момента since клиента
     let server_payload = db.get_sync_delta(client_payload.since.as_deref(), "desktop").map_err(|e| {
         eprintln!("[Lierkour Sync] Get delta error: {e:?}");
         StatusCode::INTERNAL_SERVER_ERROR

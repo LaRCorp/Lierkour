@@ -133,10 +133,20 @@ export interface ImportSummary {
 export interface ExtensionServerStatus {
   active: boolean;
   address: string;
+  port?: number;
   error?: string | null;
 }
 
 export interface ExtensionInfo {
   token: string;
   status: ExtensionServerStatus;
+}
+
+export interface SyncServerStatus {
+  active: boolean;
+  port: number;
+  local_ips: string[];
+  recommended_url: string;
+  all_urls: string[];
+  error?: string | null;
 }

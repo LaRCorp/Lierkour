@@ -1,4 +1,11 @@
-use crate::extension_api::{EXTENSION_TOKEN_SETTING, ExtensionServerStatus, generate_token};
+use crate::extension_api::{
+    EXTENSION_SERVER_ENABLED_SETTING, EXTENSION_SERVER_PORT_SETTING, EXTENSION_TOKEN_SETTING,
+    ExtensionServerHandle, ExtensionServerStatus, ImportCallback, generate_token,
+};
+use crate::sync_api::{
+    DEFAULT_SYNC_PORT, SYNC_SERVER_ENABLED_SETTING, SYNC_SERVER_PORT_SETTING, SyncServerHandle,
+    SyncServerStatus,
+};
 use lierkour_core::metadata::MovieMetadata;
 use lierkour_core::transfer::{ExportSummary, ImportSummary};
 use lierkour_core::{
@@ -20,7 +27,9 @@ pub struct AppState {
     pub db: Arc<Mutex<Database>>,
     pub paths: AppPaths,
     pub extension_token: Arc<RwLock<String>>,
-    pub extension_status: Arc<Mutex<ExtensionServerStatus>>,
+    pub extension_handle: Arc<Mutex<ExtensionServerHandle>>,
+    pub sync_handle: Arc<Mutex<SyncServerHandle>>,
+    pub on_import: ImportCallback,
 }
 
 // --------------------------- FILMS & CRUD ---------------------------
@@ -204,7 +213,7 @@ pub async fn set_setting(
     .map_err(|e| format!("Execution error: {e}"))?
 }
 
-// --------------------------- LierEX EXTENSION ---------------------------
+// --------------------------- LierEX EXTENSION & SYNC ---------------------------
 
 #[tauri::command]
 pub async fn get_extension_info(state: State<'_, AppState>) -> Result<ExtensionInfo, String> {
@@ -213,13 +222,122 @@ pub async fn get_extension_info(state: State<'_, AppState>) -> Result<ExtensionI
         .read()
         .map_err(|e| e.to_string())?
         .clone();
-    let status = state
-        .extension_status
+    let handle = state
+        .extension_handle
         .lock()
+        .map_err(|e| e.to_string())?;
+
+    Ok(ExtensionInfo {
+        token,
+        status: handle.status.clone(),
+    })
+}
+
+#[tauri::command]
+pub async fn toggle_extension_server(
+    enabled: bool,
+    port: Option<u16>,
+    state: State<'_, AppState>,
+) -> Result<ExtensionInfo, String> {
+    let current_port = state
+        .extension_handle
+        .lock()
+        .map(|h| h.status.port)
+        .unwrap_or(crate::extension_api::EXTENSION_API_PORT);
+    let target_port = port.unwrap_or(current_port);
+
+    let db = Arc::clone(&state.db);
+    let enabled_str = if enabled { "true" } else { "false" };
+    let port_str = target_port.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        db_lock
+            .set_setting(EXTENSION_SERVER_ENABLED_SETTING, enabled_str)
+            .map_err(|e| e.to_string())?;
+        db_lock
+            .set_setting(EXTENSION_SERVER_PORT_SETTING, &port_str)
+            .map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Execution error: {e}"))??;
+
+    let status = if enabled {
+        crate::extension_api::start_extension_server(
+            &state.extension_handle,
+            target_port,
+            Arc::clone(&state.extension_token),
+            Arc::clone(&state.on_import),
+        )
+    } else {
+        crate::extension_api::stop_extension_server(&state.extension_handle)
+    };
+
+    let token = state
+        .extension_token
+        .read()
         .map_err(|e| e.to_string())?
         .clone();
 
     Ok(ExtensionInfo { token, status })
+}
+
+#[tauri::command]
+pub async fn get_sync_server_status(
+    state: State<'_, AppState>,
+) -> Result<SyncServerStatus, String> {
+    let handle = state.sync_handle.lock().map_err(|e| e.to_string())?;
+    Ok(handle.status.clone())
+}
+
+#[tauri::command]
+pub async fn toggle_sync_server(
+    enabled: bool,
+    port: Option<u16>,
+    state: State<'_, AppState>,
+) -> Result<SyncServerStatus, String> {
+    let current_port = state
+        .sync_handle
+        .lock()
+        .map(|h| h.status.port)
+        .unwrap_or(DEFAULT_SYNC_PORT);
+    let target_port = port.unwrap_or(current_port);
+
+    let db = Arc::clone(&state.db);
+    let enabled_str = if enabled { "true" } else { "false" };
+    let port_str = target_port.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        db_lock
+            .set_setting(SYNC_SERVER_ENABLED_SETTING, enabled_str)
+            .map_err(|e| e.to_string())?;
+        db_lock
+            .set_setting(SYNC_SERVER_PORT_SETTING, &port_str)
+            .map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Execution error: {e}"))??;
+
+    let status = if enabled {
+        crate::sync_api::start_sync_server(
+            &state.sync_handle,
+            target_port,
+            Arc::clone(&state.db),
+            state.paths.clone(),
+        )
+    } else {
+        crate::sync_api::stop_sync_server(&state.sync_handle)
+    };
+
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn get_network_ips() -> Result<Vec<String>, String> {
+    Ok(crate::sync_api::get_local_ips())
 }
 
 #[tauri::command]
