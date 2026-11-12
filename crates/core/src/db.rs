@@ -37,10 +37,11 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (7, include_str!("../migrations/007_seasons_hierarchy.sql")),
     (8, include_str!("../migrations/008_games.sql")),
+    (9, include_str!("../migrations/009_sync_support.sql")),
 ];
 
 pub struct Database {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Database {
@@ -105,9 +106,10 @@ impl Database {
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
                     poster_path, seasons_total, watched_seasons, quotes, parent_id,
-                    media_type, platform, launcher, playtime_hours, completion_status
+                    media_type, platform, launcher, playtime_hours, completion_status,
+                    sync_id, updated_at, deleted_at
              FROM films
-             WHERE parent_id = ?1
+             WHERE parent_id = ?1 AND deleted_at IS NULL
              ORDER BY year ASC, id ASC",
         )?;
 
@@ -125,9 +127,10 @@ impl Database {
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
                     poster_path, seasons_total, watched_seasons, quotes, parent_id,
-                    media_type, platform, launcher, playtime_hours, completion_status
+                    media_type, platform, launcher, playtime_hours, completion_status,
+                    sync_id, updated_at, deleted_at
              FROM films
-             WHERE parent_id IS NULL
+             WHERE parent_id IS NULL AND deleted_at IS NULL
                AND (?1 IS NULL OR status = ?1)
                AND (?2 IS NULL OR category = ?2)
                AND (?3 IS NULL OR media_type = ?3)
@@ -203,9 +206,11 @@ impl Database {
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
                     poster_path, seasons_total, watched_seasons, quotes, parent_id,
-                    media_type, platform, launcher, playtime_hours, completion_status
+                    media_type, platform, launcher, playtime_hours, completion_status,
+                    sync_id, updated_at, deleted_at
              FROM films
-             WHERE (?1 IS NULL OR status = ?1)
+             WHERE deleted_at IS NULL
+               AND (?1 IS NULL OR status = ?1)
                AND (?2 IS NULL OR category = ?2)
                AND (?3 IS NULL OR media_type = ?3)
                AND (?4 IS NULL OR platform = ?4)
@@ -274,8 +279,9 @@ impl Database {
                 "SELECT id, title, original_title, category, director, year, genres, country,
                         runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
                         poster_path, seasons_total, watched_seasons, quotes, parent_id,
-                        media_type, platform, launcher, playtime_hours, completion_status
-                 FROM films WHERE id = ?1",
+                        media_type, platform, launcher, playtime_hours, completion_status,
+                        sync_id, updated_at, deleted_at
+                 FROM films WHERE id = ?1 AND deleted_at IS NULL",
                 [id],
                 film_from_row,
             )
@@ -293,7 +299,7 @@ impl Database {
 
         let mut statement = self
             .conn
-            .prepare("SELECT DISTINCT category FROM films ORDER BY category COLLATE NOCASE")?;
+            .prepare("SELECT DISTINCT category FROM films WHERE deleted_at IS NULL ORDER BY category COLLATE NOCASE")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
 
         for category in rows {
@@ -542,11 +548,14 @@ impl Database {
                     f.genres, f.country, f.runtime_minutes, f.imdb_id, f.tags, f.status, f.rating,
                     f.description, f.thoughts, f.poster_path, f.seasons_total,
                     f.watched_seasons, f.quotes, f.parent_id,
-                    f.media_type, f.platform, f.launcher, f.playtime_hours, f.completion_status
+                    f.media_type, f.platform, f.launcher, f.playtime_hours, f.completion_status,
+                    f.sync_id, f.updated_at, f.deleted_at
              FROM film_relations r
              JOIN films f
                ON f.id = CASE WHEN r.source_id = ?1 THEN r.target_id ELSE r.source_id END
-             WHERE r.source_id = ?1 OR r.target_id = ?1
+             WHERE (r.source_id = ?1 OR r.target_id = ?1)
+               AND f.deleted_at IS NULL
+               AND r.deleted_at IS NULL
              ORDER BY r.kind, f.title COLLATE NOCASE",
         )?;
 
@@ -565,15 +574,21 @@ impl Database {
 
     /// Все связи библиотеки — для экспорта и импорта.
     pub fn list_all_relations(&self) -> AppResult<Vec<FilmRelation>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT id, source_id, target_id, kind FROM film_relations ORDER BY id")?;
+        let mut statement = self.conn.prepare(
+            "SELECT id, source_id, target_id, kind, sync_id, updated_at, deleted_at
+             FROM film_relations
+             WHERE deleted_at IS NULL
+             ORDER BY id",
+        )?;
         let rows = statement.query_map([], |row| {
             Ok(FilmRelation {
                 id: row.get("id")?,
                 source_id: row.get("source_id")?,
                 target_id: row.get("target_id")?,
                 kind: row.get("kind")?,
+                sync_id: row.get("sync_id").unwrap_or_default(),
+                updated_at: row.get("updated_at").unwrap_or_default(),
+                deleted_at: row.get("deleted_at").unwrap_or(None),
             })
         })?;
 
@@ -598,8 +613,7 @@ impl Database {
         Ok(())
     }
 
-    /// Удаляет фильм и возвращает путь к его обложке только в том случае,
-    /// если ни один другой фильм в библиотеке не использует этот же файл постера.
+    /// Помечает фильм удалённым (soft delete) и обновляет дату изменения для синхронизации.
     pub fn delete_film(&mut self, id: i64) -> AppResult<Option<String>> {
         let poster_path: Option<String> = self
             .conn
@@ -609,13 +623,19 @@ impl Database {
             .optional()?
             .ok_or(AppError::FilmNotFound(id))?;
 
-        self.conn.execute("DELETE FROM films WHERE id = ?1", [id])?;
+        self.conn.execute(
+            "UPDATE films
+             SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            [id],
+        )?;
 
-        // Проверяем, использует ли кто-то ещё этот постер
+        // Проверяем, использует ли кто-то ещё этот постер среди активных фильмов
         if let Some(ref poster) = poster_path {
             let other_count: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM films WHERE poster_path = ?1",
-                [poster],
+                "SELECT COUNT(*) FROM films WHERE poster_path = ?1 AND id != ?2 AND deleted_at IS NULL",
+                params![poster, id],
                 |r| r.get(0),
             )?;
             if other_count > 0 {
@@ -631,9 +651,9 @@ impl Database {
 
     pub fn list_screenshots(&self, film_id: i64) -> AppResult<Vec<FilmScreenshot>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, film_id, image_path, caption, position
+            "SELECT id, film_id, image_path, caption, position, sync_id, updated_at, deleted_at
              FROM film_screenshots
-             WHERE film_id = ?1
+             WHERE film_id = ?1 AND deleted_at IS NULL
              ORDER BY position ASC, id ASC",
         )?;
         let rows = stmt.query_map([film_id], |row| {
@@ -643,6 +663,9 @@ impl Database {
                 image_path: row.get(2)?,
                 caption: row.get(3)?,
                 position: row.get(4)?,
+                sync_id: row.get("sync_id").unwrap_or_default(),
+                updated_at: row.get("updated_at").unwrap_or_default(),
+                deleted_at: row.get("deleted_at").unwrap_or(None),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -650,8 +673,9 @@ impl Database {
 
     pub fn list_all_screenshots(&self) -> AppResult<Vec<FilmScreenshot>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, film_id, image_path, caption, position
+            "SELECT id, film_id, image_path, caption, position, sync_id, updated_at, deleted_at
              FROM film_screenshots
+             WHERE deleted_at IS NULL
              ORDER BY film_id ASC, position ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -661,6 +685,9 @@ impl Database {
                 image_path: row.get(2)?,
                 caption: row.get(3)?,
                 position: row.get(4)?,
+                sync_id: row.get("sync_id").unwrap_or_default(),
+                updated_at: row.get("updated_at").unwrap_or_default(),
+                deleted_at: row.get("deleted_at").unwrap_or(None),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -698,8 +725,13 @@ impl Database {
             .optional()?;
 
         if path.is_some() {
-            self.conn
-                .execute("DELETE FROM film_screenshots WHERE id = ?1", [id])?;
+            self.conn.execute(
+                "UPDATE film_screenshots
+                 SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1",
+                [id],
+            )?;
         }
 
         Ok(path)
@@ -722,31 +754,31 @@ impl Database {
 
     pub fn get_dashboard_stats(&self) -> AppResult<DashboardStats> {
         let total_films: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
+            "SELECT COUNT(*) FROM films WHERE parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let watched_films: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'watched' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
+            "SELECT COUNT(*) FROM films WHERE status = 'watched' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let want_to_watch: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'want_to_watch' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
+            "SELECT COUNT(*) FROM films WHERE status = 'want_to_watch' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let watching: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'watching' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
+            "SELECT COUNT(*) FROM films WHERE status = 'watching' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let dropped: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'dropped' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
+            "SELECT COUNT(*) FROM films WHERE status = 'dropped' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
@@ -754,7 +786,7 @@ impl Database {
         let average_rating: Option<f64> = self
             .conn
             .query_row(
-                "SELECT AVG(rating) FROM films WHERE rating IS NOT NULL AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
+                "SELECT AVG(rating) FROM films WHERE rating IS NOT NULL AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
                 [],
                 |r| r.get(0),
             )
@@ -764,7 +796,7 @@ impl Database {
         let total_runtime_minutes: i64 = self
             .conn
             .query_row(
-                "SELECT COALESCE(SUM(runtime_minutes), 0) FROM films WHERE status = 'watched' AND runtime_minutes IS NOT NULL AND (media_type = 'movie' OR media_type IS NULL)",
+                "SELECT COALESCE(SUM(runtime_minutes), 0) FROM films WHERE status = 'watched' AND runtime_minutes IS NOT NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL",
                 [],
                 |r| r.get(0),
             )?;
@@ -773,7 +805,7 @@ impl Database {
         let mut genre_counts = std::collections::HashMap::<String, usize>::new();
         let mut stmt = self
             .conn
-            .prepare("SELECT genres FROM films WHERE genres != '' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)")?;
+            .prepare("SELECT genres FROM films WHERE genres != '' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         for g_str in rows.flatten() {
             for genre in split_comma_list(&g_str) {
@@ -788,7 +820,7 @@ impl Database {
         let mut director_counts = std::collections::HashMap::<String, usize>::new();
         let mut stmt = self
             .conn
-            .prepare("SELECT director FROM films WHERE director != '' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)")?;
+            .prepare("SELECT director FROM films WHERE director != '' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL) AND deleted_at IS NULL")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         for d in rows.flatten() {
             let trimmed = d.trim();
@@ -802,20 +834,20 @@ impl Database {
 
         // Статистика сезонов: отдельные карточки сезонов + сезоны в родительских тайтлах без карточек
         let child_seasons_total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE parent_id IS NOT NULL",
+            "SELECT COUNT(*) FROM films WHERE parent_id IS NOT NULL AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let child_seasons_watched: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE parent_id IS NOT NULL AND status = 'watched'",
+            "SELECT COUNT(*) FROM films WHERE parent_id IS NOT NULL AND status = 'watched' AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let mut statement = self.conn.prepare(
             "SELECT id, seasons_total, watched_seasons FROM films
-             WHERE parent_id IS NULL AND (category = 'Сериалы' OR category = 'Аниме' OR seasons_total > 0)",
+             WHERE parent_id IS NULL AND deleted_at IS NULL AND (category = 'Сериалы' OR category = 'Аниме' OR seasons_total > 0)",
         )?;
 
         let mut legacy_total = 0usize;
@@ -833,7 +865,7 @@ impl Database {
             let has_children: i64 = self
                 .conn
                 .query_row(
-                    "SELECT COUNT(*) FROM films WHERE parent_id = ?1",
+                    "SELECT COUNT(*) FROM films WHERE parent_id = ?1 AND deleted_at IS NULL",
                     [parent_id],
                     |r| r.get(0),
                 )
@@ -851,13 +883,13 @@ impl Database {
 
         // --- Статистика по играм (Games Analytics) ---
         let total_games: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE media_type = 'game'",
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
 
         let completed_games: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND (
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND deleted_at IS NULL AND (
                 completion_status IN ('Пройдена', '100% достижений', 'completed', 'completed_100')
                 OR status = 'watched'
             )",
@@ -866,7 +898,7 @@ impl Database {
         )?;
 
         let in_progress_games: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND (
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND deleted_at IS NULL AND (
                 completion_status IN ('В процессе', 'in_progress')
                 OR status = 'watching'
             )",
@@ -875,7 +907,7 @@ impl Database {
         )?;
 
         let dropped_games: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND (
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND deleted_at IS NULL AND (
                 completion_status IN ('Брошена', 'dropped')
                 OR status = 'dropped'
             )",
@@ -884,7 +916,7 @@ impl Database {
         )?;
 
         let total_playtime_hours: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(playtime_hours), 0) FROM films WHERE media_type = 'game'",
+            "SELECT COALESCE(SUM(playtime_hours), 0) FROM films WHERE media_type = 'game' AND deleted_at IS NULL",
             [],
             |r| r.get(0),
         )?;
@@ -892,7 +924,7 @@ impl Database {
         let mut top_platforms = Vec::new();
         let mut platform_stmt = self.conn.prepare(
             "SELECT platform, COUNT(*) as c FROM films
-             WHERE media_type = 'game' AND platform IS NOT NULL AND trim(platform) != ''
+             WHERE media_type = 'game' AND deleted_at IS NULL AND platform IS NOT NULL AND trim(platform) != ''
              GROUP BY platform
              ORDER BY c DESC, platform ASC
              LIMIT 5",
@@ -945,6 +977,9 @@ fn film_from_row(row: &Row<'_>) -> rusqlite::Result<Film> {
     let launcher: Option<String> = row.get("launcher").unwrap_or(None);
     let playtime_hours: Option<u32> = row.get("playtime_hours").unwrap_or(None);
     let completion_status: Option<String> = row.get("completion_status").unwrap_or(None);
+    let sync_id: String = row.get("sync_id").unwrap_or_default();
+    let updated_at: String = row.get("updated_at").unwrap_or_default();
+    let deleted_at: Option<String> = row.get("deleted_at").unwrap_or(None);
 
     Ok(Film {
         id: row.get("id")?,
@@ -972,6 +1007,9 @@ fn film_from_row(row: &Row<'_>) -> rusqlite::Result<Film> {
         launcher,
         playtime_hours,
         completion_status,
+        sync_id,
+        updated_at,
+        deleted_at,
     })
 }
 
@@ -1297,15 +1335,12 @@ mod tests {
 
         let from_second = db.relations_for(second_id).unwrap();
         assert_eq!(from_second[0].label(), "Сиквел");
-        assert_eq!(
-            db.list_all_relations().unwrap(),
-            vec![FilmRelation {
-                id: 1,
-                source_id: second_id,
-                target_id: first_id,
-                kind: RelationKind::Sequel,
-            }]
-        );
+        let all_rels = db.list_all_relations().unwrap();
+        assert_eq!(all_rels.len(), 1);
+        assert_eq!(all_rels[0].id, 1);
+        assert_eq!(all_rels[0].source_id, second_id);
+        assert_eq!(all_rels[0].target_id, first_id);
+        assert_eq!(all_rels[0].kind, RelationKind::Sequel);
 
         // Повторная связь и связь с самим собой отклоняются/игнорируются.
         assert!(

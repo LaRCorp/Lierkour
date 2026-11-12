@@ -207,6 +207,12 @@ pub struct FilmRelation {
     pub source_id: i64,
     pub target_id: i64,
     pub kind: RelationKind,
+    #[serde(default)]
+    pub sync_id: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 /// Кадр или скриншот фильма.
@@ -218,6 +224,12 @@ pub struct FilmScreenshot {
     #[serde(default)]
     pub caption: String,
     pub position: i64,
+    #[serde(default)]
+    pub sync_id: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 /// Черновик нового скриншота при добавлении к фильму.
@@ -355,6 +367,12 @@ pub struct Film {
     pub playtime_hours: Option<u32>,
     #[serde(default)]
     pub completion_status: Option<String>,
+    #[serde(default)]
+    pub sync_id: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 impl Film {

@@ -1,8 +1,8 @@
 <div align="center">
   <img src="src-tauri/icons/logo.png" width="96" height="96" alt="Lierkour Logo" />
-  <h1>🎮🎬 Lierkour v2.1 — Хранитель пройденных Медиа</h1>
+  <h1>🎮🎬 Lierkour v2.2 — Хранитель пройденных Медиа</h1>
   <p>
-    <a href="https://github.com/LaRCorp/Lierkour/releases"><img src="https://img.shields.io/badge/version-2.1.0-6366f1?style=flat-square" alt="Version 2.1.0" /></a>
+    <a href="https://github.com/LaRCorp/Lierkour/releases"><img src="https://img.shields.io/badge/version-2.2.0-6366f1?style=flat-square" alt="Version 2.2.0" /></a>
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-0ea5e9?style=flat-square" alt="Windows | Linux" />
     <img src="https://img.shields.io/badge/Tauri%202-React%2019%20%7C%20Rust-8b5cf6?style=flat-square" alt="Tauri 2 + React 19 + Rust" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-10b981?style=flat-square" alt="GPLv3 License" /></a>

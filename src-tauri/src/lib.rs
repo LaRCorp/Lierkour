@@ -1,5 +1,6 @@
 mod commands;
 mod extension_api;
+mod sync_api;
 
 use commands::*;
 use extension_api::{
@@ -80,6 +81,7 @@ pub fn run() {
                 Arc::clone(&extension_status),
                 on_import,
             );
+            sync_api::start_sync_server(Arc::clone(&db_arc), paths.clone());
 
             app.manage(AppState {
                 db: db_arc,

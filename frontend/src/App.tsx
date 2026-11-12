@@ -555,7 +555,7 @@ export const App: React.FC = () => {
                     {t('app.title')}
                   </h1>
                   <span className="text-[9px] sm:text-[10px] bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.2 rounded border border-indigo-500/20">
-                    v2.1
+                    v2.2
                   </span>
                 </div>
                 <span className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 font-medium tracking-tight hidden md:block">

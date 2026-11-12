@@ -1,12 +1,14 @@
 [package]
 name = "lierkour-core"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 authors = ["LaRevole"]
 license = "GPL-3.0-only"
 description = "Core business logic, models, and database layer for Lierkour - Keeper of Completed Media"
 
 [dependencies]
+uuid = { version = "1", features = ["v4"] }
+jni = { version = "0.21", optional = true }
 anyhow = "1.0"
 thiserror = "2.0"
 rusqlite = { version = "0.41", features = ["bundled"] }
@@ -27,4 +29,11 @@ ureq = { version = "3.5", default-features = false, features = [
     "json",
     "rustls",
 ] }
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = []
+android = ["dep:jni"]
 

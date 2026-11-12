@@ -1930,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "lierkour-app"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1948,17 +1948,19 @@ dependencies = [
 
 [[package]]
 name = "lierkour-core"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "csv",
  "dirs",
  "image",
+ "jni",
  "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "ureq",
+ "uuid",
  "zip",
 ]
 

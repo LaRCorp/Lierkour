@@ -1,8 +1,10 @@
+pub mod android;
 pub mod db;
 pub mod error;
 pub mod metadata;
 pub mod models;
 pub mod storage;
+pub mod sync;
 pub mod transfer;
 
 pub use db::Database;

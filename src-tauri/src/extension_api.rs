@@ -497,7 +497,7 @@ async fn health_handler(
     Json(HealthResponse {
         status: "ok".to_owned(),
         app: "Lierkour".to_owned(),
-        version: "2.1".to_owned(),
+        version: "2.2".to_owned(),
         authorized: is_authorized(&headers, &state.token),
     })
 }

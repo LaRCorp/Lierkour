@@ -792,6 +792,9 @@ mod tests {
             launcher: None,
             playtime_hours: None,
             completion_status: None,
+            sync_id: String::new(),
+            updated_at: String::new(),
+            deleted_at: None,
         };
 
         assert!(is_duplicate(
@@ -857,6 +860,9 @@ mod tests {
             launcher: None,
             playtime_hours: None,
             completion_status: None,
+            sync_id: String::new(),
+            updated_at: String::new(),
+            deleted_at: None,
         };
 
         export_to_csv(std::slice::from_ref(&film), &csv_path).unwrap();
