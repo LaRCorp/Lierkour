@@ -55,7 +55,7 @@ cargo build --release --features custom-protocol
 
 Released under **GNU General Public License v3.0 (GPLv3)** — see [LICENSE](LICENSE).
 
-Copyright (c) 2026 LaRevole (LaRCorp).
+Copyright (c) 2026 LaRevole.
 
 ### Related Ecosystem Projects
 - ⚡🔄 **[LaRCorp/LierSync](https://github.com/LaRCorp/LierSync)** — fast P2P file transfers, folder sync, and shared clipboard for PC & Android.
