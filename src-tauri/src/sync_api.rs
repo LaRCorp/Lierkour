@@ -11,7 +11,7 @@ use lierkour_core::sync::{SyncPayload, create_thumbnail};
 use lierkour_core::{AppPaths, Database};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_SYNC_PORT: u16 = 8766;
+pub const DEFAULT_SYNC_PORT: u16 = 8767;
 pub const SYNC_SERVER_ENABLED_SETTING: &str = "sync_server_enabled";
 pub const SYNC_SERVER_PORT_SETTING: &str = "sync_server_port";
 
@@ -49,18 +49,10 @@ impl Default for SyncServerStatus {
     }
 }
 
+#[derive(Default)]
 pub struct SyncServerHandle {
     pub shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     pub status: SyncServerStatus,
-}
-
-impl Default for SyncServerHandle {
-    fn default() -> Self {
-        Self {
-            shutdown_tx: None,
-            status: SyncServerStatus::default(),
-        }
-    }
 }
 
 /// Определение локальных IPv4 адресов ПК для подключения мобильных устройств.
@@ -68,29 +60,26 @@ pub fn get_local_ips() -> Vec<String> {
     let mut ips = Vec::new();
 
     // 1. Метод UDP-маршрутизации (быстро определяет первичный сетевой интерфейс с выходом в LAN)
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = socket.local_addr() {
-                let ip_str = addr.ip().to_string();
-                if !addr.ip().is_loopback() {
-                    ips.push(ip_str);
-                }
-            }
-        }
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0")
+        && socket.connect("8.8.8.8:80").is_ok()
+        && let Ok(addr) = socket.local_addr()
+        && !addr.ip().is_loopback()
+    {
+        ips.push(addr.ip().to_string());
     }
 
     // 2. Разрешение локального имени хоста через системный DNS/NetBIOS
     let hostname = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_default();
-    if !hostname.is_empty() {
-        if let Ok(addrs) = format!("{hostname}:0").to_socket_addrs() {
-            for addr in addrs {
-                if let std::net::IpAddr::V4(ipv4) = addr.ip() {
-                    let s = ipv4.to_string();
-                    if !ipv4.is_loopback() && !ips.contains(&s) {
-                        ips.push(s);
-                    }
+    if !hostname.is_empty()
+        && let Ok(addrs) = format!("{hostname}:0").to_socket_addrs()
+    {
+        for addr in addrs {
+            if let std::net::IpAddr::V4(ipv4) = addr.ip() {
+                let s = ipv4.to_string();
+                if !ipv4.is_loopback() && !ips.contains(&s) {
+                    ips.push(s);
                 }
             }
         }
@@ -215,9 +204,14 @@ pub fn start_sync_server(
         };
 
         let app = Router::new()
+            .route("/api/v1/sync/ping", get(sync_ping_handler))
+            .route("/api/lier/info", get(sync_ping_handler))
             .route("/api/v1/sync/exchange", post(exchange_handler))
             .route("/api/v1/sync/media/{kind}/{file_name}", get(media_handler))
-            .route("/api/v1/sync/media/{kind}/{file_name}/thumb", get(thumbnail_handler))
+            .route(
+                "/api/v1/sync/media/{kind}/{file_name}/thumb",
+                get(thumbnail_handler),
+            )
             .with_state(state)
             .layer(middleware::from_fn(cors_middleware));
 
@@ -248,27 +242,53 @@ async fn cors_middleware(req: Request<axum::body::Body>, next: Next) -> Response
 
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
-    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
-    headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
-    headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type"));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type"),
+    );
     response
+}
+
+async fn sync_ping_handler() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "ecosystem": "LIER",
+        "app": "Lierkour Sync",
+        "status": "running",
+        "version": env!("CARGO_PKG_VERSION"),
+        "port": DEFAULT_SYNC_PORT,
+        "platform": std::env::consts::OS,
+        "license": "GPL-3.0-only"
+    }))
 }
 
 async fn exchange_handler(
     State(state): State<SyncServerState>,
     Json(client_payload): Json<SyncPayload>,
 ) -> Result<Json<SyncPayload>, StatusCode> {
-    let mut db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let _summary = db.apply_sync_delta(&client_payload).map_err(|e| {
         eprintln!("[Lierkour Sync] Apply delta error: {e:?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let server_payload = db.get_sync_delta(client_payload.since.as_deref(), "desktop").map_err(|e| {
-        eprintln!("[Lierkour Sync] Get delta error: {e:?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let server_payload = db
+        .get_sync_delta(client_payload.since.as_deref(), "desktop")
+        .map_err(|e| {
+            eprintln!("[Lierkour Sync] Get delta error: {e:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(server_payload))
 }
@@ -309,11 +329,11 @@ async fn thumbnail_handler(
 
     let thumb_dir = state.paths.data_dir.join("thumbnails").join(&kind);
     let thumb_file = thumb_dir.join(&file_name);
-    if !thumb_file.exists() {
-        if let Err(e) = create_thumbnail(&original, &thumb_file, 400) {
-            eprintln!("[Sync] Thumbnail generation error: {e:?}");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    if !thumb_file.exists()
+        && let Err(e) = create_thumbnail(&original, &thumb_file, 400)
+    {
+        eprintln!("[Sync] Thumbnail generation error: {e:?}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     match tokio::fs::read(&thumb_file).await {

@@ -150,3 +150,19 @@ export interface SyncServerStatus {
   all_urls: string[];
   error?: string | null;
 }
+
+export interface EcosystemAppStatus {
+  id: string;
+  name: string;
+  port: number;
+  online: boolean;
+  version?: string | null;
+  detail: string;
+}
+
+export interface LierSyncSendResult {
+  success: boolean;
+  target?: string | null;
+  sent_files: number;
+  bytes: number;
+}

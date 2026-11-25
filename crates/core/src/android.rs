@@ -276,7 +276,11 @@ pub extern "system" fn Java_com_larcorp_lierkour_RustBridge_getSyncDelta(
     let since_str = get_rust_string(&mut env, since);
     let client_str = get_rust_string(&mut env, client_id);
 
-    let since_opt = if since_str.is_empty() { None } else { Some(since_str.as_str()) };
+    let since_opt = if since_str.is_empty() {
+        None
+    } else {
+        Some(since_str.as_str())
+    };
 
     match db.get_sync_delta(since_opt, &client_str) {
         Ok(payload) => {

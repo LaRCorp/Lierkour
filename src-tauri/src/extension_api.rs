@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, RwLock};
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -45,18 +45,10 @@ impl Default for ExtensionServerStatus {
     }
 }
 
+#[derive(Default)]
 pub struct ExtensionServerHandle {
     pub shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     pub status: ExtensionServerStatus,
-}
-
-impl Default for ExtensionServerHandle {
-    fn default() -> Self {
-        Self {
-            shutdown_tx: None,
-            status: ExtensionServerStatus::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -131,6 +123,14 @@ pub type ImportCallback =
 pub struct ExtensionApiState {
     pub token: Arc<RwLock<String>>,
     pub on_import: ImportCallback,
+    pub db: Arc<Mutex<Database>>,
+    pub paths: AppPaths,
+}
+
+#[derive(Debug, Deserialize)]
+struct EcosystemSearchQuery {
+    #[serde(default)]
+    q: String,
 }
 
 pub fn generate_token() -> String {
@@ -521,9 +521,84 @@ async fn health_handler(
     Json(HealthResponse {
         status: "ok".to_owned(),
         app: "Lierkour".to_owned(),
-        version: "2.2".to_owned(),
+        version: "2.3.0".to_owned(),
         authorized: is_authorized(&headers, &state.token),
     })
+}
+
+async fn lier_info_handler(
+    State(state): State<ExtensionApiState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "ecosystem": "LIER",
+        "app": "Lierkour",
+        "status": "running",
+        "version": "2.3.0",
+        "port": EXTENSION_API_PORT,
+        "platform": std::env::consts::OS,
+        "license": "GPL-3.0-only",
+        "authorized": is_authorized(&headers, &state.token),
+        "capabilities": ["movie_import", "game_import", "ost_search", "mobile_sync"]
+    }))
+}
+
+async fn ecosystem_search_handler(
+    State(state): State<ExtensionApiState>,
+    Query(params): Query<EcosystemSearchQuery>,
+) -> impl IntoResponse {
+    let q = params.q.trim().to_ascii_lowercase();
+    let db = Arc::clone(&state.db);
+    let paths = state.paths.clone();
+
+    let items = tokio::task::spawn_blocking(move || -> Vec<serde_json::Value> {
+        let Ok(guard) = db.lock() else {
+            return Vec::new();
+        };
+        let Ok(all) = guard.list_all_films() else {
+            return Vec::new();
+        };
+        all.into_iter()
+            .filter(|f| {
+                q.is_empty()
+                    || f.title.to_ascii_lowercase().contains(&q)
+                    || f.original_title.to_ascii_lowercase().contains(&q)
+                    || f.director.to_ascii_lowercase().contains(&q)
+                    || f.genres.to_ascii_lowercase().contains(&q)
+            })
+            .take(10)
+            .map(|f| {
+                use base64::Engine;
+                let poster_data_uri = f.poster_path.as_deref().and_then(|rel| {
+                    let abs = paths.resolve_poster(rel);
+                    let bytes = std::fs::read(abs).ok()?;
+                    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+                        "image/png"
+                    } else if bytes.starts_with(b"RIFF") {
+                        "image/webp"
+                    } else {
+                        "image/jpeg"
+                    };
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    Some(format!("data:{mime};base64,{b64}"))
+                });
+                serde_json::json!({
+                    "id": f.id,
+                    "title": f.title,
+                    "original_title": if f.original_title.is_empty() { serde_json::Value::Null } else { serde_json::json!(f.original_title) },
+                    "media_type": f.media_type.as_db_str(),
+                    "creator": if f.director.is_empty() { serde_json::Value::Null } else { serde_json::json!(f.director) },
+                    "year": f.year.map(u32::from),
+                    "genres": if f.genres.is_empty() { serde_json::Value::Null } else { serde_json::json!(f.genres) },
+                    "poster_data_uri": poster_data_uri
+                })
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+
+    Json(serde_json::json!({ "items": items }))
 }
 
 async fn import_handler(
@@ -585,12 +660,16 @@ async fn import_handler(
 pub fn build_router(state: ExtensionApiState) -> Router {
     Router::new()
         .route("/api/health", get(health_handler))
+        .route("/api/lier/info", get(lier_info_handler))
+        .route("/api/ecosystem/search", get(ecosystem_search_handler))
         .route("/api/import", post(import_handler))
         .with_state(state)
         .layer(middleware::from_fn(cors_middleware))
 }
 
-pub fn stop_extension_server(handle_arc: &Arc<Mutex<ExtensionServerHandle>>) -> ExtensionServerStatus {
+pub fn stop_extension_server(
+    handle_arc: &Arc<Mutex<ExtensionServerHandle>>,
+) -> ExtensionServerStatus {
     let mut handle = match handle_arc.lock() {
         Ok(h) => h,
         Err(e) => e.into_inner(),
@@ -612,6 +691,8 @@ pub fn start_extension_server(
     port: u16,
     token: Arc<RwLock<String>>,
     on_import: ImportCallback,
+    db: Arc<Mutex<Database>>,
+    paths: AppPaths,
 ) -> ExtensionServerStatus {
     stop_extension_server(handle_arc);
 
@@ -667,7 +748,12 @@ pub fn start_extension_server(
         handle.status.clone()
     };
 
-    let router = build_router(ExtensionApiState { token, on_import });
+    let router = build_router(ExtensionApiState {
+        token,
+        on_import,
+        db,
+        paths,
+    });
     let handle_for_task = Arc::clone(handle_arc);
 
     tauri::async_runtime::spawn(async move {
@@ -728,9 +814,16 @@ mod tests {
             .unwrap();
 
         let token = Arc::new(RwLock::new(token.to_owned()));
+        let db_state = Arc::clone(&db);
+        let paths_state = paths.clone();
         let on_import: ImportCallback =
             Arc::new(move |payload| import_extension_draft(&db, &paths, payload));
-        let router = build_router(ExtensionApiState { token, on_import });
+        let router = build_router(ExtensionApiState {
+            token,
+            on_import,
+            db: db_state,
+            paths: paths_state,
+        });
 
         let listener = rt
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))

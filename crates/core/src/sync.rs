@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
@@ -83,7 +83,10 @@ impl Database {
                 thoughts: row.get("thoughts")?,
                 poster_path: row.get("poster_path")?,
                 seasons_total,
-                watched_seasons: crate::models::parse_watched_seasons(&watched_seasons, seasons_total),
+                watched_seasons: crate::models::parse_watched_seasons(
+                    &watched_seasons,
+                    seasons_total,
+                ),
                 quotes: crate::models::parse_quotes(&quotes_str),
                 parent_id: row.get("parent_id")?,
                 media_type,
@@ -188,7 +191,8 @@ impl Database {
                 Some((local_id, local_updated_at)) => {
                     // Конфликт LWW: перезаписываем только если удалённая запись новее
                     if film.updated_at >= local_updated_at {
-                        let quotes_json = serde_json::to_string(&film.quotes).unwrap_or_else(|_| "[]".to_owned());
+                        let quotes_json =
+                            serde_json::to_string(&film.quotes).unwrap_or_else(|_| "[]".to_owned());
                         let watched_seasons_str = film
                             .watched_seasons
                             .iter()
@@ -260,7 +264,8 @@ impl Database {
                 }
                 None => {
                     // Новая запись с другого устройства
-                    let quotes_json = serde_json::to_string(&film.quotes).unwrap_or_else(|_| "[]".to_owned());
+                    let quotes_json =
+                        serde_json::to_string(&film.quotes).unwrap_or_else(|_| "[]".to_owned());
                     let watched_seasons_str = film
                         .watched_seasons
                         .iter()
@@ -430,7 +435,10 @@ impl Database {
             }
         }
 
-        let now: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |r| r.get(0))?;
+        let now: String =
+            tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |r| {
+                r.get(0)
+            })?;
 
         tx.commit()?;
 
@@ -449,9 +457,11 @@ pub fn create_thumbnail(src: &Path, dst: &Path, max_width: u32) -> AppResult<()>
         fs::create_dir_all(parent)?;
     }
 
-    let img = image::open(src).map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    let img = image::open(src).map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
     let thumb = img.thumbnail(max_width, max_width * 2);
-    thumb.save(dst).map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    thumb
+        .save(dst)
+        .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
 
     Ok(())
 }

@@ -30,7 +30,7 @@ export const SyncView: React.FC<SyncViewProps> = ({
   const { t } = useTranslation();
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [selectedIpIndex, setSelectedIpIndex] = useState(0);
-  const [customPort, setCustomPort] = useState(syncStatus?.port ? String(syncStatus.port) : '8766');
+  const [customPort, setCustomPort] = useState(syncStatus?.port ? String(syncStatus.port) : '8767');
   const [isToggling, setIsToggling] = useState(false);
 
   const isActive = Boolean(syncStatus?.active);
@@ -39,7 +39,7 @@ export const SyncView: React.FC<SyncViewProps> = ({
     : ['127.0.0.1'];
 
   const selectedIp = localIps[selectedIpIndex] || localIps[0];
-  const activePort = syncStatus?.port || 8766;
+  const activePort = syncStatus?.port || 8767;
   const connectionUrl = `http://${selectedIp}:${activePort}`;
 
   const handleCopy = async () => {
@@ -56,7 +56,7 @@ export const SyncView: React.FC<SyncViewProps> = ({
     setIsToggling(true);
     try {
       const portNum = parseInt(customPort, 10);
-      const validPort = isNaN(portNum) || portNum <= 0 ? 8766 : portNum;
+      const validPort = isNaN(portNum) || portNum <= 0 ? 8767 : portNum;
       await onToggleSyncServer(!isActive, validPort);
     } finally {
       setIsToggling(false);

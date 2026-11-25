@@ -1,5 +1,6 @@
 pub mod android;
 pub mod db;
+pub mod ecosystem;
 pub mod error;
 pub mod metadata;
 pub mod models;

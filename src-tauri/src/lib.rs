@@ -88,7 +88,8 @@ pub fn run() {
 
             let db_arc = Arc::new(Mutex::new(db));
             let extension_token = Arc::new(RwLock::new(token_str));
-            let extension_handle = Arc::new(Mutex::new(extension_api::ExtensionServerHandle::default()));
+            let extension_handle =
+                Arc::new(Mutex::new(extension_api::ExtensionServerHandle::default()));
             let sync_handle = Arc::new(Mutex::new(sync_api::SyncServerHandle::default()));
 
             let on_import = create_tauri_import_callback(
@@ -103,6 +104,8 @@ pub fn run() {
                     ext_port,
                     Arc::clone(&extension_token),
                     Arc::clone(&on_import),
+                    Arc::clone(&db_arc),
+                    paths.clone(),
                 );
             }
             if sync_enabled {
@@ -160,7 +163,11 @@ pub fn run() {
             export_backup_zip,
             import_backup_zip,
             export_films_csv,
-            export_films_markdown
+            export_films_markdown,
+            probe_lier_ecosystem,
+            backup_and_send_to_liersync,
+            send_film_clipboard_to_liersync,
+            forward_ost_to_liertags
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

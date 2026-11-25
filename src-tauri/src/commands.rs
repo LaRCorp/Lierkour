@@ -222,10 +222,7 @@ pub async fn get_extension_info(state: State<'_, AppState>) -> Result<ExtensionI
         .read()
         .map_err(|e| e.to_string())?
         .clone();
-    let handle = state
-        .extension_handle
-        .lock()
-        .map_err(|e| e.to_string())?;
+    let handle = state.extension_handle.lock().map_err(|e| e.to_string())?;
 
     Ok(ExtensionInfo {
         token,
@@ -269,6 +266,8 @@ pub async fn toggle_extension_server(
             target_port,
             Arc::clone(&state.extension_token),
             Arc::clone(&state.on_import),
+            Arc::clone(&state.db),
+            state.paths.clone(),
         )
     } else {
         crate::extension_api::stop_extension_server(&state.extension_handle)
@@ -647,6 +646,107 @@ pub async fn export_films_markdown(
         let films = db_lock.list_all_films().map_err(|e| e.to_string())?;
         let p = Path::new(&target_path);
         lierkour_core::transfer::export_to_markdown(&films, p).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Execution error: {e}"))?
+}
+
+// --------------------------- LIER ECOSYSTEM ---------------------------
+
+#[tauri::command]
+pub async fn probe_lier_ecosystem() -> Vec<lierkour_core::ecosystem::EcosystemAppStatus> {
+    tokio::task::spawn_blocking(lierkour_core::ecosystem::probe_ecosystem)
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn backup_and_send_to_liersync(
+    state: State<'_, AppState>,
+) -> Result<lierkour_core::ecosystem::LierSyncSendResult, String> {
+    let db = Arc::clone(&state.db);
+    let paths = state.paths.clone();
+    tokio::task::spawn_blocking(move || {
+        let backup_path = paths.data_dir.join("lierkour-backup.zip");
+        {
+            let db_lock = db.lock().map_err(|e| e.to_string())?;
+            lierkour_core::transfer::export_library(&db_lock, &paths, &backup_path)
+                .map_err(|e| e.to_string())?;
+        }
+        let path_str = backup_path.to_string_lossy().to_string();
+        lierkour_core::ecosystem::send_paths_to_liersync(&[path_str]).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Execution error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn send_film_clipboard_to_liersync(
+    film_id: i64,
+    send_poster: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    let paths = state.paths.clone();
+    tokio::task::spawn_blocking(move || {
+        let film = {
+            let db_lock = db.lock().map_err(|e| e.to_string())?;
+            db_lock.get_film(film_id).map_err(|e| e.to_string())?
+        };
+        if send_poster && let Some(rel) = film.poster_path.as_deref() {
+            let abs = paths.resolve_poster(rel);
+            let raw = std::fs::read(&abs).map_err(|e| e.to_string())?;
+            let img = image::load_from_memory(&raw).map_err(|e| e.to_string())?;
+            let mut png_bytes = Vec::new();
+            img.write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .map_err(|e| e.to_string())?;
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+            return lierkour_core::ecosystem::push_clipboard_to_liersync(None, Some(&b64))
+                .map_err(|e| e.to_string());
+        }
+        let mut summary = film.title.clone();
+        if let Some(y) = film.year {
+            summary.push_str(&format!(" ({y})"));
+        }
+        if let Some(r) = film.rating {
+            summary.push_str(&format!(" — {r}/10"));
+        }
+        if let Some(q) = film.quotes.first()
+            && !q.trim().is_empty()
+        {
+            summary.push_str(&format!("\n«{}»", q.trim()));
+        }
+        lierkour_core::ecosystem::push_clipboard_to_liersync(Some(&summary), None)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Execution error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn forward_ost_to_liertags(
+    film_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let film = {
+            let db_lock = db.lock().map_err(|e| e.to_string())?;
+            db_lock.get_film(film_id).map_err(|e| e.to_string())?
+        };
+        lierkour_core::ecosystem::forward_ost_to_liertags(
+            &film.title,
+            &film.original_title,
+            &film.director,
+            film.year,
+            &film.genres,
+            film.id,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?

@@ -21,6 +21,8 @@ import {
   Unlink,
   ClipboardPaste,
   Gamepad2,
+  Send,
+  Music,
 } from 'lucide-react';
 
 type RelationChoice =
@@ -71,6 +73,7 @@ export const FilmDetailView: React.FC<FilmDetailViewProps> = ({
   const [isAddingRelation, setIsAddingRelation] = useState(false);
   const [targetFilmId, setTargetFilmId] = useState<number | ''>('');
   const [relationChoice, setRelationChoice] = useState<RelationChoice>('sequel_to');
+  const [ecoStatus, setEcoStatus] = useState<string | null>(null);
 
   // Load Poster
   useEffect(() => {
@@ -152,6 +155,33 @@ export const FilmDetailView: React.FC<FilmDetailViewProps> = ({
       onBack();
     } catch (err) {
       console.error('Failed to detach season:', err);
+    }
+  };
+
+  const handleSendToLierSync = async (sendPoster: boolean) => {
+    setEcoStatus(null);
+    try {
+      await invoke('send_film_clipboard_to_liersync', {
+        filmId: film.id,
+        sendPoster,
+      });
+      setEcoStatus(
+        sendPoster
+          ? 'Постер отправлен в буфер LierSync!'
+          : 'Название/цитата отправлены в буфер LierSync!'
+      );
+    } catch (err: any) {
+      setEcoStatus(`Ошибка LierSync: ${err}`);
+    }
+  };
+
+  const handleForwardOst = async () => {
+    setEcoStatus(null);
+    try {
+      await invoke('forward_ost_to_liertags', { filmId: film.id });
+      setEcoStatus('Метаданные OST отправлены в LierTags (:8766)!');
+    } catch (err: any) {
+      setEcoStatus(`Ошибка LierTags: ${err}`);
     }
   };
 
@@ -453,6 +483,26 @@ export const FilmDetailView: React.FC<FilmDetailViewProps> = ({
           )}
 
           <button
+            type="button"
+            onClick={() => handleSendToLierSync(Boolean(film.poster_path))}
+            title="Передать постер или название/цитату в буфер LierSync (:8768)"
+            className="flex items-center gap-1.5 rounded-xl border border-teal-500/30 bg-teal-50 dark:bg-teal-500/10 px-3 py-2 text-xs font-semibold text-teal-600 dark:text-teal-400 hover:bg-teal-100 dark:hover:bg-teal-500/20 transition-colors shadow-sm cursor-pointer"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>В LierSync</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleForwardOst}
+            title="Передать тайтл в LierTags для разметки OST-альбома (:8766)"
+            className="flex items-center gap-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shadow-sm cursor-pointer"
+          >
+            <Music className="w-3.5 h-3.5 text-teal-500" />
+            <span>OST → LierTags</span>
+          </button>
+
+          <button
             onClick={() => onEdit(film)}
             className="flex items-center gap-1.5 rounded-xl border border-indigo-500/30 bg-indigo-50 dark:bg-indigo-500/10 px-4 py-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors shadow-sm"
           >
@@ -474,6 +524,19 @@ export const FilmDetailView: React.FC<FilmDetailViewProps> = ({
           </button>
         </div>
       </div>
+
+      {ecoStatus && (
+        <div className="rounded-xl border border-teal-500/30 bg-teal-500/10 px-4 py-2 text-xs font-semibold text-teal-400 flex items-center justify-between">
+          <span>{ecoStatus}</span>
+          <button
+            type="button"
+            onClick={() => setEcoStatus(null)}
+            className="text-slate-400 hover:text-white cursor-pointer"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Main Film Info Section */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 p-6 backdrop-blur-md shadow-sm">
